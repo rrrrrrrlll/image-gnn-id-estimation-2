@@ -15,7 +15,7 @@ module load anaconda
 conda activate image_gnn_env
 
 # Navigate to working directory
-cd /scratch4/scr4_yxu70/rliu107/744_final/image-gnn/
+cd /home/rliu107/image-gnn-id-est-2/
 
 # Execute the final GNN training loop for CelebA-Gender (gb)
 # Requires config/gnn/celeba_gb.yaml to point at the CelebA-Gender KNN graph (built from all 129 latent dims -- no reduced-dim file was supplied for CelebA, unlike the other datasets)

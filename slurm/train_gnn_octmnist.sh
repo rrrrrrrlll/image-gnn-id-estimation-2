@@ -15,7 +15,7 @@ module load anaconda
 conda activate image_gnn_env
 
 # Navigate to working directory
-cd /scratch4/scr4_yxu70/rliu107/744_final/image-gnn/
+cd /home/rliu107/image-gnn-id-est-2/
 
 # Execute the final GNN training loop for OCTMNIST
 # Requires config/gnn/octmnist.yaml to point at the OCTMNIST KNN graph

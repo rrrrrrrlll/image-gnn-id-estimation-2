@@ -14,7 +14,7 @@
 module load anaconda
 conda activate image_gnn_env
 
-cd /scratch4/scr4_yxu70/rliu107/744_final/image-gnn/
+cd /home/rliu107/image-gnn-id-est-2/
 
 # Start the W&B agent for FMNIST
 # Before submitting, create this dataset's sweep once with:

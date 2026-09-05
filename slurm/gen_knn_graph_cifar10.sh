@@ -14,7 +14,7 @@ module load anaconda
 conda activate image_gnn_env
 
 # Navigate to working directory
-cd /scratch4/scr4_yxu70/rliu107/744_final/image-gnn/
+cd /home/rliu107/image-gnn-id-est-2/
 
 # Build the KNN graph for CIFAR10 (README Step 9).
 # Reads config/knn/cifar10.yaml (the full-dimension, non-"_pca_" embedding

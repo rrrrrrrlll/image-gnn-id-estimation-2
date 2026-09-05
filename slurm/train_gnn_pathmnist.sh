@@ -15,7 +15,7 @@ module load anaconda
 conda activate image_gnn_env
 
 # Navigate to working directory
-cd /scratch4/scr4_yxu70/rliu107/744_final/image-gnn/
+cd /home/rliu107/image-gnn-id-est-2/
 
 # Execute the final GNN training loop for PathMNIST
 # Requires config/gnn/pathmnist.yaml to point at the PathMNIST KNN graph

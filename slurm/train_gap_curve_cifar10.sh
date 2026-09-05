@@ -15,7 +15,7 @@ module load anaconda
 conda activate image_gnn_env
 
 # Navigate to working directory
-cd /scratch4/scr4_yxu70/rliu107/744_final/image-gnn/
+cd /home/rliu107/image-gnn-id-est-2/
 
 # Generalization-gap-vs-graph-size curve for CIFAR10 (Gap 1).
 # Trains a fresh model from scratch at each of several graph sizes
