@@ -1,0 +1,5 @@
+model: MLPModel
+
+args:
+    hidden_size: 128
+    layers: 3

@@ -1,0 +1,5 @@
+train:
+  base_dir: data/FMNISTEmbeddings/smsl_embeddings/fmnist_smsl_train_embeddings.npy
+
+test:
+  base_dir: data/FMNISTEmbeddings/smsl_embeddings/fmnist_smsl_test_embeddings.npy

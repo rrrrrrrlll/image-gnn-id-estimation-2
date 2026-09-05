@@ -1,0 +1,9 @@
+train:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/CIFAR10Embeddings/cifar10_train_embeddings.npy
+    train: true
+
+test:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/CIFAR10Embeddings/cifar10_test_embeddings.npy
+    train: false

@@ -1,0 +1,5 @@
+train:
+  base_dir: data/CIFAR10Embeddings/smsl_embeddings/cifar10_smsl_train_embeddings.npy
+
+test:
+  base_dir: data/CIFAR10Embeddings/smsl_embeddings/cifar10_smsl_test_embeddings.npy

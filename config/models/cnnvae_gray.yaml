@@ -1,0 +1,4 @@
+model: CNNVAEModel
+
+args:
+    in_channels: 1

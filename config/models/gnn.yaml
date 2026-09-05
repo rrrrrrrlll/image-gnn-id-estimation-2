@@ -1,0 +1,10 @@
+model: GNNModel
+
+args:
+    hidden_size: 32
+
+    gnn_conv: GCNConv
+    gnn_conv_args: {}
+
+    layers: 2
+    dropout: 0.5

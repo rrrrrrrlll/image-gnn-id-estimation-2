@@ -1,0 +1,9 @@
+train:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/FMNISTEmbeddings/fmnist_train_embeddings.npy
+    train: true
+
+test:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/FMNISTEmbeddings/fmnist_test_embeddings.npy
+    train: false

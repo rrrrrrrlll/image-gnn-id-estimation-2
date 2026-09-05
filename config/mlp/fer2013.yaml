@@ -1,0 +1,9 @@
+train:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/FER2013Embeddings/fer2013_train_embeddings.npy
+    train: true
+
+test:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/FER2013Embeddings/fer2013_test_embeddings.npy
+    train: false

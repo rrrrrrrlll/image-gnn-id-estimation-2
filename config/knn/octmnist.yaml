@@ -1,0 +1,5 @@
+train:
+  base_dir: data/OCTMNISTEmbeddings/smsl_embeddings/octmnist_smsl_train_embeddings.npy
+
+test:
+  base_dir: data/OCTMNISTEmbeddings/smsl_embeddings/octmnist_smsl_test_embeddings.npy

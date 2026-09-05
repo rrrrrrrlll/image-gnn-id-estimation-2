@@ -1,0 +1,11 @@
+train:
+    dataset_class: GraphEmbeddedDataset
+    base_dir: data/FER2013Graph/fer2013_train_knn_graph-100.pkl
+    train: true
+    smsl_setting: true
+
+test:
+    dataset_class: GraphEmbeddedDataset
+    base_dir: data/FER2013Graph/fer2013_test_knn_graph-100.pkl
+    train: false
+    smsl_setting: true

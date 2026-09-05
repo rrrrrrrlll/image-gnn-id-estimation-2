@@ -1,0 +1,9 @@
+train:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/CELEBAEmbeddings/celeba_sb_train_embeddings.npy
+    train: true
+
+test:
+    dataset_class: FlatEmbeddingDataset
+    base_dir: data/CELEBAEmbeddings/celeba_sb_test_embeddings.npy
+    train: false

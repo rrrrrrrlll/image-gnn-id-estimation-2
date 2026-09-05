@@ -1,0 +1,5 @@
+learning_rate: 0.01
+batch_size: 256
+num_epochs: 50
+save_model: False
+loss: torch_ce_loss

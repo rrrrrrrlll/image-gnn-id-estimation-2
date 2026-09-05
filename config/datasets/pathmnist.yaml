@@ -1,0 +1,11 @@
+train:
+    dataset_class: PathMNISTDataset
+    root: data/
+    train: true
+    num_workers: 0
+
+test:
+    dataset_class: PathMNISTDataset
+    root: data/
+    train: false
+    num_workers: 0
