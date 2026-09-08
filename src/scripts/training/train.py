@@ -469,10 +469,15 @@ class Trainer():
             self.train_ds,
             self.training_config["batch_size"]
         )
+        # num_neighbors has 2 entries (2 hops) to match config/models/gnn.yaml
+        # (layers: 2). A single-entry [-1] here only materializes 1-hop
+        # neighborhoods, so the model's second GCN layer aggregated over an
+        # incidental, incomplete neighbor set at eval time -- a mismatch with
+        # training's 2-hop sample_subgraph() sampling.
         test_dl = NeighborLoader(
             self.test_ds.data, 
             input_nodes=self.test_ds.data.mask.bool(), 
-            num_neighbors=[-1], 
+            num_neighbors=[-1, -1], 
             batch_size=512
         )
 
@@ -614,10 +619,15 @@ class Trainer():
             to (created if missing); rows are appended, so re-running
             with more seeds or sizes does not erase earlier rows.
         """
+        # num_neighbors has 2 entries (2 hops) to match config/models/gnn.yaml
+        # (layers: 2). A single-entry [-1] here only materializes 1-hop
+        # neighborhoods, so the model's second GCN layer aggregated over an
+        # incidental, incomplete neighbor set at eval time -- a mismatch with
+        # training's 2-hop sample_subgraph() sampling.
         test_dl = NeighborLoader(
             self.test_ds.data,
             input_nodes=self.test_ds.data.mask.bool(),
-            num_neighbors=[-1],
+            num_neighbors=[-1, -1],
             batch_size=512
         )
 

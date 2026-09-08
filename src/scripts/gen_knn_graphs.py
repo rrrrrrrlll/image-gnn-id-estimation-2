@@ -151,7 +151,19 @@ def main(sys_args):
     plt.show()
 
     edge_weight = edge_weight.view(-1)
-    edge_weight[edge_weight < 0.75] = 0.0
+
+    # Use this dataset's own mean edge weight as the threshold instead of a
+    # fixed constant. A fixed cutoff (previously 0.75) was tuned around
+    # datasets whose typical nearest-neighbor distance is small (MNIST,
+    # FMNIST, FER2013, PathMNIST); CIFAR10 and CelebA have a much larger
+    # typical distance, so a fixed 0.75 zeroed out the large majority of
+    # CIFAR10's edges. Thresholding at the mean is dataset-adaptive: it
+    # always keeps roughly the above-average half of each dataset's own
+    # edge-weight distribution, regardless of that distribution's absolute
+    # scale.
+    threshold = edge_weight.mean().item()
+    print(f"Using mean edge weight as threshold: {threshold:.4f}")
+    edge_weight[edge_weight < threshold] = 0.0
 
     edge_index, edge_weight = to_undirected(
         edge_index,
@@ -161,7 +173,7 @@ def main(sys_args):
 
     plt.figure(figsize=(7, 4))
     plt.hist(edge_weight.numpy(), bins=100)
-    plt.title("Edge Weights After Thresholding (< 0.75 set to 0)")
+    plt.title(f"Edge Weights After Thresholding (< {threshold:.4f} mean set to 0)")
     plt.xlabel("Weight")
     plt.ylabel("Frequency")
     plt.grid(True)
@@ -212,6 +224,7 @@ def main(sys_args):
     print("==============================")
     print(f"Nodes: {full_ds.shape[0]}")
     print(f"Features per node: {x.shape[1]}")
+    print(f"Edge weight threshold (mean): {threshold:.4f}")
     print(f"Edges: {edge_index.shape[1]}")
     print(f"Train graph: {train_output}")
     print(f"Test graph:  {test_output}")

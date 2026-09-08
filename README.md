@@ -482,6 +482,16 @@ model = kNNModel(
 
 `n_trees=100000` is used uniformly across all datasets in this fork, matching fork 1's convention.
 
+**Fix applied in this fork to `kNNModel.__init__()`** (in `src/scripts/models/models.py`): the
+original implementation called `self.ann.build(n_trees)` *before* the `add_item()` loop that
+populates the index. Annoy does not raise an error for this, but the search trees end up built
+over an empty index, so `get_nns_by_item()` silently returns the wrong neighbors — verified
+directly against a standalone Annoy index, where the wrong-order build missed a point's true
+nearest neighbor entirely on a small test case. `add_item()` now runs for every point first, and
+`build()` is called once afterward. **Every KNN graph generated before this fix is unreliable and
+must be regenerated** (Step 9) — this is upstream of the edge-weight threshold below, so it
+affects all seven datasets regardless of that fix's status.
+
 ---
 
 ## Step 9 — Construct the KNN Graph
@@ -523,16 +533,23 @@ data/MNISTGraph/
 └── mnist_test_knn_graph-100.pkl
 ```
 
-**A caveat specific to CIFAR10 and CelebA:** the Gaussian edge-weight
-kernel (`ker_width=5`) and the hard `0.75` similarity threshold in
-`gen_knn_graphs.py` are fixed constants applied identically to every
-dataset. CIFAR10's raw embedding (4096 dims, large per-dimension scale)
-and CelebA's (128 dims but a larger vector norm than MNIST's own 128-dim
-embedding) both produce typical nearest-neighbor Euclidean distances large
-enough that most of their k=100 neighbor weights land at or below 0.75 and
-get zeroed out — CIFAR10 far more severely than CelebA. This is a real
-property of these two embeddings' scale relative to a threshold tuned
-around the other datasets' smaller distances, not a bug in the script.
+**Fix applied in this fork to the edge-weight threshold in `gen_knn_graphs.py`:** the original
+implementation zeroed out any edge weight below a hard, fixed `0.75` constant (with the Gaussian
+kernel's `ker_width=5`), applied identically to every dataset. CIFAR10's raw embedding (4096 dims,
+large per-dimension scale) and CelebA's (128 dims but a larger vector norm than MNIST's own
+128-dim embedding) both produce typical nearest-neighbor Euclidean distances large enough that
+most of their k=100 neighbor weights landed at or below 0.75 and got zeroed out — CIFAR10 far more
+severely than CelebA — while MNIST/FMNIST/FER2013/PathMNIST kept nearly all of theirs. That was a
+real property of these embeddings' scale relative to one threshold tuned around the
+smaller-distance datasets, not a one-off bug, so a single fixed cutoff can't work for all seven.
+
+The threshold is now computed per run as that run's own mean edge weight
+(`edge_weight.mean().item()`) instead of the fixed `0.75`, which always keeps roughly the
+above-average half of each dataset's own edge-weight distribution regardless of its absolute
+scale. **This changes graph density for all seven datasets, not just CIFAR10/CelebA** — any graph
+generated before this fix does not reflect it and needs to be regenerated for results to be
+comparable across datasets.
+
 CIFAR10's 4096-dim input also makes `gen_knn_graphs.py`'s per-point Annoy
 query loop noticeably slower (~6 it/s observed vs. 40+ it/s for the other
 datasets) — budget SLURM wall-time accordingly.
@@ -624,6 +641,18 @@ makes Step 11 meaningfully comparable across datasets that range from
 prints its results to stdout — it does not write a CSV — so `.out` logs
 under `results/train_gnn/` are the only record of its output; use Step 11a
 below if you need machine-readable results.
+
+**Fix applied in this fork to the evaluation `NeighborLoader` in both `train_eval_grow_graph()`
+and `train_eval_gap_curve()`:** the GNN in `config/models/gnn.yaml` has `layers: 2`, so its second
+graph-conv layer needs a true 2-hop neighborhood to aggregate over. Training already samples 2
+hops (`sample_subgraph()`'s `NeighborLoader(..., num_neighbors=[10, 10])`), but both functions'
+`test_dl` was built with a single-entry `num_neighbors=[-1]` — only 1 hop. The model's second
+layer at evaluation time was aggregating over whatever nodes happened to be incidentally present
+in that 1-hop batch, not the neighborhood it was trained to expect. Both are now
+`num_neighbors=[-1, -1]`. This is the most likely explanation for generalization-gap curves that
+were flat or increasing with graph size instead of decreasing (observed on MNIST/FMNIST/PathMNIST)
+— results generated before this fix should be treated the same way as pre-Annoy-fix results: not
+reliable for the final comparison.
 
 ---
 

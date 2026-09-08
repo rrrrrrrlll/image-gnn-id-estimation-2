@@ -467,9 +467,14 @@ class kNNModel():
         self.indexes = list(range(ds.shape[0]))
         self.targets = ds[:, 1]
         self.ann : AnnoyIndex = AnnoyIndex(ds.shape[1], metric)
-        _ = self.ann.build(n_trees)
         for i in range(ds.shape[0]):
             self.ann.add_item(i, ds[i, :])
+        # NOTE: add_item() must be called for every point BEFORE build() --
+        # Annoy locks the index at build() time. The previous order (build()
+        # then add_item()) did not raise an error but silently built the
+        # search trees over an empty index, so get_nns_by_item() returned
+        # neighbors that were not the true nearest neighbors.
+        self.ann.build(n_trees)
  
         self.k = k
 
