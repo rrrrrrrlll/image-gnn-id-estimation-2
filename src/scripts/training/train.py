@@ -233,6 +233,7 @@ class Trainer():
             test_losses = []
             train_losses = []
 
+            model.train()
             for i, train_batch in tqdm(enumerate(train_dl)):
                 batch = train_batch.to(self.device)
 
@@ -251,6 +252,7 @@ class Trainer():
 
                 optimizer.zero_grad()
 
+            model.eval()
             with torch.no_grad():
                 for i, test_batch in enumerate(test_dl):
                     batch = test_batch.to(self.device)
@@ -524,23 +526,30 @@ class Trainer():
                 train_acc = []
                 test_acc = []
 
+                model.train()
                 for j, train_batch in enumerate(train_dl[i]):
                     batch = train_batch.to(self.device)
 
                     # Forward pass
                     y_hat = model(batch)
 
-                    # Compute loss
+                    # Compute loss. GNNModel.forward() now returns only the seed
+                    # nodes' rows (out[:batch.batch_size]), so the target labels
+                    # are sliced the same way instead of the old batch.mask.bool()
+                    # selector, which (since sample_subgraph() only keeps edges
+                    # between already-sampled training nodes) was true for nearly
+                    # the whole local batch -- scoring under-supported sampled
+                    # neighbors right alongside the real seed-node predictions.
                     J = loss(
-                        batch.y[batch.mask.bool()].reshape(-1).to(torch.long), 
+                        batch.y[:batch.batch_size].reshape(-1).to(torch.long), 
                         y_hat
                     )
                     train_acc.append(
                         100 * (
                             sum
                             (
-                                batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
-                            ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
+                                batch.y[:batch.batch_size].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
+                            ) / batch.y[:batch.batch_size].reshape(-1).detach().shape[0]
                         ).item()
                     )
 
@@ -559,6 +568,7 @@ class Trainer():
                         )
                         train_losses.append(J.detach())
 
+                model.eval()
                 with torch.no_grad():
                     for j, test_batch in enumerate(test_dl):
                         batch = test_batch.to(self.device)
@@ -566,17 +576,19 @@ class Trainer():
                         # Forward pass
                         y_val = model(batch)
 
-                        # Compute val loss
+                        # Compute val loss -- see the train-block comment above on
+                        # why this now slices by :batch.batch_size instead of
+                        # batch.mask.bool().
                         J = loss(
-                            batch.y[batch.mask.bool()].reshape(-1).to(torch.long), 
+                            batch.y[:batch.batch_size].reshape(-1).to(torch.long), 
                             y_val
                         )
                         test_acc.append(
                             100 * (
                                 sum
                                 (
-                                    batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_val, axis=1).indices.detach()
-                                ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
+                                    batch.y[:batch.batch_size].reshape(-1).detach() == torch.max(y_val, axis=1).indices.detach()
+                                ) / batch.y[:batch.batch_size].reshape(-1).detach().shape[0]
                             ).item()
                         )
 
@@ -691,23 +703,30 @@ class Trainer():
                     train_acc = []
                     train_loss_vals = []
 
+                    model.train()
                     for train_batch in train_dl:
                         batch = train_batch.to(self.device)
 
                         # Forward pass
                         y_hat = model(batch)
 
-                        # Compute loss
+                        # Compute loss. GNNModel.forward() now returns only the seed
+                        # nodes' rows (out[:batch.batch_size]), so the target labels
+                        # are sliced the same way instead of the old batch.mask.bool()
+                        # selector, which (since sample_subgraph() only keeps edges
+                        # between already-sampled training nodes) was true for nearly
+                        # the whole local batch -- scoring under-supported sampled
+                        # neighbors right alongside the real seed-node predictions.
                         J = loss(
-                            batch.y[batch.mask.bool()].reshape(-1).to(torch.long),
+                            batch.y[:batch.batch_size].reshape(-1).to(torch.long),
                             y_hat
                         )
 
                         train_acc.append(
                             100 * (
                                 sum(
-                                    batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
-                                ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
+                                    batch.y[:batch.batch_size].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
+                                ) / batch.y[:batch.batch_size].reshape(-1).detach().shape[0]
                             ).item()
                         )
 
@@ -724,6 +743,7 @@ class Trainer():
                     test_acc = []
                     test_loss_vals = []
 
+                    model.eval()
                     with torch.no_grad():
                         for test_batch in test_dl:
                             batch = test_batch.to(self.device)
@@ -731,17 +751,19 @@ class Trainer():
                             # Forward pass
                             y_val = model(batch)
 
-                            # Compute val loss
+                            # Compute val loss -- see the train-block comment above
+                            # on why this now slices by :batch.batch_size instead of
+                            # batch.mask.bool().
                             J = loss(
-                                batch.y[batch.mask.bool()].reshape(-1).to(torch.long),
+                                batch.y[:batch.batch_size].reshape(-1).to(torch.long),
                                 y_val
                             )
 
                             test_acc.append(
                                 100 * (
                                     sum(
-                                        batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_val, axis=1).indices.detach()
-                                    ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
+                                        batch.y[:batch.batch_size].reshape(-1).detach() == torch.max(y_val, axis=1).indices.detach()
+                                    ) / batch.y[:batch.batch_size].reshape(-1).detach().shape[0]
                                 ).item()
                             )
 
@@ -854,6 +876,7 @@ class Trainer():
             train_acc = []
             train_loss_vals = []
 
+            model.train()
             for train_batch in train_dl:
                 batch = train_batch.to(self.device)
 
@@ -887,6 +910,7 @@ class Trainer():
             test_acc = []
             test_loss_vals = []
 
+            model.eval()
             with torch.no_grad():
                 for test_batch in test_dl:
                     batch = test_batch.to(self.device)

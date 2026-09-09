@@ -257,8 +257,17 @@ class GNNModel(nn.Module):
             else:
                 out = layer(out)
 
-        # return out[:batch.batch_size]
-        return out[batch.mask.bool()]
+        # NeighborLoader batches put the seed nodes -- the ones this batch is
+        # actually supposed to predict -- as the first batch.batch_size rows, with
+        # any sampled 1-/2-hop neighbors afterward (pulled in only to support
+        # message-passing into the seeds, not meant to be scored themselves).
+        # This used to slice by batch.mask instead, a leftover whole-graph
+        # train/test flag: sample_subgraph() only keeps edges between
+        # already-sampled training nodes, so that mask was true for nearly the
+        # entire local batch, not just the seeds -- scoring predictions for
+        # under-supported sampled neighbors (whose own 2-hop neighborhoods were
+        # never fully expanded) right alongside the real seed-node predictions.
+        return out[:batch.batch_size]
 
 class DGMGNNModel(nn.Module):
     """
@@ -479,12 +488,27 @@ class kNNModel():
         self.k = k
 
     def __call__(self, index, n):
+        # Query for n+1 neighbors and drop the query point itself from the
+        # result. Annoy's get_nns_by_item() includes the item itself in its
+        # own neighbor list (distance 0 to itself), and nothing here used to
+        # filter that out -- every node silently got a self-loop edge with
+        # weight=exp(0)=1.0, and it consumed one of the n requested neighbor
+        # slots, so each node was really only getting n-1 genuine neighbors.
+        # Querying for one extra and filtering restores n genuine neighbors
+        # and removes the spurious weight=1.0 spike from the edge-weight
+        # distribution.
         knn_idx, knn_dist = self.ann.get_nns_by_item(
             index, 
-            n, 
+            n + 1, 
             self.k, 
             include_distances=True
         )
+
+        filtered = [
+            (idx, dist) for idx, dist in zip(knn_idx, knn_dist) if idx != index
+        ][:n]
+        knn_idx = [idx for idx, _ in filtered]
+        knn_dist = [dist for _, dist in filtered]
 
         return (knn_idx, knn_dist)
 
