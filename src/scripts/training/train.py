@@ -626,10 +626,24 @@ class Trainer():
             value is reused for both the subgraph sample and the model
             init at every size, so e.g. seed 0's node sample is nested
             across increasing sizes (a deliberate choice to reduce
-            noise across the sweep, not an error).
+            noise across the sweep, not an error). Either a single int
+            (same seed count at every fraction) or a dict mapping each
+            fraction to its own seed count -- smaller fractions produce
+            noisier subgraph samples, so it's often worth spending more
+            seeds there and fewer at large fractions that are already
+            more stable.
         results_dir: directory the per-dataset results CSV is written
             to (created if missing); rows are appended, so re-running
             with more seeds or sizes does not erase earlier rows.
+
+        Note on the recorded train_acc: it is measured in eval mode
+        (dropout off, BatchNorm running stats) on the same train_dl
+        subgraph, not during the training forward/backward pass -- we
+        only care about the trained model's own accuracy on the data
+        it was trained on, not the noisier accuracy of a mid-update,
+        dropout-active network. This keeps train_acc and test_acc
+        directly comparable (same eval-mode conditions, different
+        data), so gen_gap_acc reflects actual generalization.
         """
         # num_neighbors has 2 entries (2 hops) to match config/models/gnn.yaml
         # (layers: 2). A single-entry [-1] here only materializes 1-hop
@@ -674,7 +688,14 @@ class Trainer():
         for fraction in size_fractions:
             n_target = max(1, round(fraction * n_eligible))
 
-            for seed in range(num_seeds):
+            # num_seeds may be a single int (same count everywhere) or a dict
+            # keyed by fraction (per-fraction count) -- resolve it here so the
+            # seed loop below is agnostic to which form was passed in.
+            fraction_num_seeds = (
+                num_seeds[fraction] if isinstance(num_seeds, dict) else num_seeds
+            )
+
+            for seed in range(fraction_num_seeds):
                 print()
                 print(f"=== {self.dataset_name} | fraction={fraction} | n_target={n_target} | seed={seed} ===")
 
@@ -700,7 +721,6 @@ class Trainer():
                 train_loss_vals, test_loss_vals = [], []
 
                 for epoch in tqdm(range(epochs)):
-                    train_acc = []
                     train_loss_vals = []
 
                     model.train()
@@ -722,14 +742,6 @@ class Trainer():
                             y_hat
                         )
 
-                        train_acc.append(
-                            100 * (
-                                sum(
-                                    batch.y[:batch.batch_size].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
-                                ) / batch.y[:batch.batch_size].reshape(-1).detach().shape[0]
-                            ).item()
-                        )
-
                         train_loss_vals.append(J.detach().cpu().numpy())
 
                         # Backward pass
@@ -740,11 +752,34 @@ class Trainer():
 
                         optimizer.zero_grad()
 
+                    # train_acc is NOT taken from the training loop above -- that
+                    # forward pass has dropout randomly zeroing units and BatchNorm
+                    # using each mini-batch's own statistics mid-optimizer-update, so
+                    # its accuracy reflects a noisy, still-changing network rather
+                    # than the trained model itself. Instead, train_acc is measured
+                    # here, in eval mode on the same train_dl subgraph, right
+                    # alongside test_acc (also eval-mode) -- so both numbers reflect
+                    # the same finished, clean model and gen_gap_acc captures actual
+                    # generalization rather than a train-mode-vs-eval-mode artifact.
+                    train_acc = []
                     test_acc = []
                     test_loss_vals = []
 
                     model.eval()
                     with torch.no_grad():
+                        for train_batch in train_dl:
+                            batch = train_batch.to(self.device)
+
+                            y_hat = model(batch)
+
+                            train_acc.append(
+                                100 * (
+                                    sum(
+                                        batch.y[:batch.batch_size].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
+                                    ) / batch.y[:batch.batch_size].reshape(-1).detach().shape[0]
+                                ).item()
+                            )
+
                         for test_batch in test_dl:
                             batch = test_batch.to(self.device)
 

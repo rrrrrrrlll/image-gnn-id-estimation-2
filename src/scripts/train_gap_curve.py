@@ -21,9 +21,14 @@ def parse_args(args):
     )
     parser.add_argument(
         "--num-seeds",
-        type=int,
-        default=3,
-        help="Number of independently-initialized models trained at each graph size"
+        type=str,
+        default="3",
+        help=(
+            "Number of independently-initialized models trained at each graph size. "
+            "Either a single int (used for every fraction) or a comma-separated list "
+            "of ints the same length as --size-fractions (one seed count per fraction, "
+            "e.g. smaller/noisier fractions get more seeds than large ones)."
+        )
     )
     parser.add_argument(
         "--results-dir",
@@ -45,6 +50,21 @@ def main(sys_args):
 
     size_fractions = tuple(float(x) for x in args.size_fractions.split(","))
 
+    # --num-seeds accepts either one int (same seed count at every fraction) or a
+    # comma-separated list the same length as --size-fractions (one seed count per
+    # fraction, so e.g. small/noisy fractions can use more seeds than large ones).
+    num_seeds_parts = [x.strip() for x in args.num_seeds.split(",")]
+    if len(num_seeds_parts) == 1:
+        num_seeds = int(num_seeds_parts[0])
+    else:
+        if len(num_seeds_parts) != len(size_fractions):
+            raise ValueError(
+                f"--num-seeds has {len(num_seeds_parts)} comma-separated values but "
+                f"--size-fractions has {len(size_fractions)}; provide either a single "
+                f"value or one per fraction."
+            )
+        num_seeds = dict(zip(size_fractions, (int(x) for x in num_seeds_parts)))
+
     trainer = Trainer(**config)
 
     # Trainer.dataset_name is derived from dataset_class, which is the
@@ -55,7 +75,7 @@ def main(sys_args):
 
     trainer.train_eval_gap_curve(
         size_fractions=size_fractions,
-        num_seeds=args.num_seeds,
+        num_seeds=num_seeds,
         results_dir=args.results_dir
     )
 

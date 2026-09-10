@@ -21,7 +21,6 @@ analysis/
 checkpoints/
 recon_images/
 results/
-slurm/
 _to_delete/
 
 # Generated images and notes -- README.md is the one markdown file

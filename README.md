@@ -480,7 +480,16 @@ model = kNNModel(
 )
 ```
 
-`n_trees=100000` is used uniformly across all datasets in this fork, matching fork 1's convention.
+`n_trees=50` is used uniformly across all datasets in this fork.
+
+**Fix applied in this fork to the tree count itself:** this was previously `n_trees=100000`,
+inherited from fork 1's convention. Under the `kNNModel.__init__()` build-order bug described
+below, that value never actually mattered -- Annoy built its trees over an empty index regardless
+of `n_trees`, so an extreme value was silently free. Once the build-order fix below made Annoy
+genuinely build that many trees over the full dataset, `n_trees=100000` OOM-killed the SLURM job
+for every single dataset, including the smallest ones -- it's roughly 1000x Annoy's typical usage
+range (tens to a few hundred trees). `n_trees=50` is a standard, well-supported value with no such
+cost.
 
 **Fix applied in this fork to `kNNModel.__init__()`** (in `src/scripts/models/models.py`): the
 original implementation called `self.ann.build(n_trees)` *before* the `add_item()` loop that
@@ -491,6 +500,18 @@ nearest neighbor entirely on a small test case. `add_item()` now runs for every 
 `build()` is called once afterward. **Every KNN graph generated before this fix is unreliable and
 must be regenerated** (Step 9) — this is upstream of the edge-weight threshold below, so it
 affects all seven datasets regardless of that fix's status.
+
+**Fix applied in this fork to `kNNModel.__call__()`** (also in `src/scripts/models/models.py`):
+Annoy's `get_nns_by_item()` includes the query point itself in its own neighbor list (it has
+distance 0 to itself), and the original `__call__()` passed that straight through with no
+filtering. `build_edge_index()` in `gen_knn_graphs.py` then built a genuine self-loop edge `(i, i)`
+for every node `i`, with `weight = exp(-0 / ker_width**2) = 1.0` — confirmed as the source of the
+weight=1.0 spike visible in the "before thresholding" histograms. It also silently cost each node
+one of its `k` requested neighbor slots, so every node was really only getting `k-1` genuine
+neighbors. `__call__()` now queries for `k+1` neighbors and drops the one equal to the query
+index, restoring `k` genuine neighbors and removing the spurious weight=1.0 edges. **Every KNN
+graph generated before this fix has one spurious self-loop edge per node and one fewer genuine
+neighbor per node than intended, and must be regenerated** (Step 9).
 
 ---
 
@@ -543,12 +564,39 @@ severely than CelebA — while MNIST/FMNIST/FER2013/PathMNIST kept nearly all of
 real property of these embeddings' scale relative to one threshold tuned around the
 smaller-distance datasets, not a one-off bug, so a single fixed cutoff can't work for all seven.
 
-The threshold is now computed per run as that run's own mean edge weight
-(`edge_weight.mean().item()`) instead of the fixed `0.75`, which always keeps roughly the
-above-average half of each dataset's own edge-weight distribution regardless of its absolute
-scale. **This changes graph density for all seven datasets, not just CIFAR10/CelebA** — any graph
-generated before this fix does not reflect it and needs to be regenerated for results to be
-comparable across datasets.
+The threshold was then changed to that run's own mean edge weight (`edge_weight.mean().item()`),
+and after that to `edge_weight.mean() - edge_weight.std()`. Both were dataset-adaptive but still
+sensitive to the shape of each dataset's own distribution: for MNIST/FMNIST/PathMNIST, the mean
+landed at or near the distribution's own peak (confirmed from the before/after threshold
+histograms `gen_knn_graphs.py` saves under `results/edge_weights/`), so cutting there discarded
+most edges rather than "roughly half." Both mean-based versions were also skewed upward by the
+weight=1.0 self-loop edges described in Step 8, before that bug was fixed.
+
+The threshold is now the 50th percentile (median) of that run's own edge-weight distribution:
+`np.percentile(edge_weight.numpy(), 50)`. A percentile threshold sidesteps both problems — it
+guarantees a specific, dataset-independent fraction of edges survive (the top half by weight)
+regardless of the distribution's shape, and it is no longer pulled around by the self-loop spike
+now that that spike is gone. **This changes graph density for all seven datasets** — any graph
+generated before this fix (including ones built under the intermediate plain-mean or
+mean-std versions, and any built before the Step 8 self-loop fix) does not reflect it and needs to
+be regenerated for results to be comparable across datasets.
+
+**Fix applied in this fork to actually drop the thresholded edges:** every version of the
+threshold above (`0.75`, plain mean, mean - std, and now the percentile) only ever zeroed out
+`edge_weight` for the edges below it -- none of them removed those edges from `edge_index`, so
+the graph saved to disk kept its full, untrimmed k-neighbor topology regardless of thresholding.
+This went unnoticed because `GCNConv`'s weighted aggregation does correctly treat a zero-weight
+edge as contributing nothing, but `NeighborLoader` -- used for both `sample_subgraph()`'s bounded
+`num_neighbors=[10, 10]` training sampling (Step 11/11a) and the unbounded `[-1, -1]` used for
+evaluation -- samples purely from `edge_index` topology and has no notion of `edge_weight`, so
+training's bounded 10-per-hop draw was wasting roughly half its budget on structurally-present
+but functionally dead edges. This was confirmed as the likely cause of GNN accuracy trailing the
+graph-free MLP baseline (Step 11b) by a wide margin on MNIST/FMNIST/PathMNIST, and of the
+generalization gap growing with graph size instead of shrinking. `gen_knn_graphs.py` now filters
+`edge_index`/`edge_weight` down to `edge_weight > 0` right after thresholding, so the saved
+graph's actual structure matches what thresholding was meant to produce. **This changes graph
+density for all seven datasets again** — every KNN graph needs to be regenerated once more, and
+every downstream gap-curve/MLP-baseline/ID-estimation result rerun, for results to reflect it.
 
 CIFAR10's 4096-dim input also makes `gen_knn_graphs.py`'s per-point Annoy
 query loop noticeably slower (~6 it/s observed vs. 40+ it/s for the other
@@ -654,6 +702,36 @@ were flat or increasing with graph size instead of decreasing (observed on MNIST
 — results generated before this fix should be treated the same way as pre-Annoy-fix results: not
 reliable for the final comparison.
 
+**Fix applied in this fork to which rows `GNNModel.forward()` scores, in `models/models.py`:**
+it used to `return out[batch.mask.bool()]`; a commented-out line right above it,
+`# return out[:batch.batch_size]`, shows the standard, correct alternative was known but not
+used. A `NeighborLoader` batch's first `batch.batch_size` rows are always the true seed nodes
+being predicted; anything after that is sampled 1-/2-hop context, pulled in only to support
+message-passing into the seeds, not meant to be scored itself. `batch.mask` is a leftover
+whole-graph train/test flag — since `sample_subgraph()` only keeps edges between already-sampled
+training nodes, that mask was true for nearly the entire local training batch (not just its
+seeds), and for test batches it also picked up any test node reachable as *another* seed's
+neighbor. Scoring those extra rows mixed real seed-node predictions with predictions for nodes
+whose own 2-hop neighborhoods were never fully expanded — diluting the training signal and
+corrupting both train and test accuracy, worse as the graph gets denser. `forward()` now returns
+`out[:batch.batch_size]`, and every loss/accuracy computation in `train_eval_grow_graph()` and
+`train_eval_gap_curve()` slices `batch.y[:batch.batch_size]` to match (`train_eval_mlp_baseline()`
+doesn't use `NeighborLoader` at all, so it's unaffected and unchanged).
+
+**Fix applied in this fork to add `model.train()`/`model.eval()` calls:** none of `Trainer`'s
+methods ever switched the model between training and evaluation mode — `nn.Module` defaults to
+training mode and nothing changed that, so `nn.Dropout` (`config/models/gnn.yaml`'s `dropout: 0.5`)
+and `GNNBasicBlock`'s `nn.BatchNorm1d` stayed in training behavior during the "test" loop too:
+test accuracy was being computed with dropout still randomly zeroing units and BatchNorm still
+using per-batch statistics, not a clean inference pass. `model.train()` now runs before each
+epoch's training loop and `model.eval()` before its test loop, in `train()`,
+`train_eval_grow_graph()`, `train_eval_gap_curve()`, and `train_eval_mlp_baseline()`.
+
+**Both of the above changes affect every dataset's results (Step 11, Step 11a, and Step 11b).**
+Results generated before this fix should be treated the same way as pre-Annoy-fix results: not
+reliable for the final comparison — everything needs rerunning once more, on top of the KNN-graph
+edge-pruning fix in Step 9.
+
 ---
 
 ## Step 11a — Generalization-Gap-vs-Graph-Size Curve (optional, for the intrinsic-dimension analysis)
@@ -678,8 +756,21 @@ Optional flags:
 
 ```text
 --size-fractions   comma-separated fractions of eligible training nodes (default 0.1,0.25,0.5,0.75,1.0)
---num-seeds        independent fresh-model repeats per size (default 3)
+--num-seeds        independent fresh-model repeats per size (default 3). Either a single
+                   int (same count at every fraction) or a comma-separated list the same
+                   length as --size-fractions, one seed count per fraction -- useful since
+                   small fractions sample noisier subgraphs and benefit from more seeds
+                   while large fractions are already fairly stable with few.
 --results-dir      output directory for the per-dataset CSV (default results/gap_curve)
+```
+
+Example pairing a log-spaced, small-n-skewed fraction list (for relating the gap curve
+to intrinsic dimension) with more seeds at the noisier, smaller fractions:
+
+```powershell
+python src/scripts/train_gap_curve.py -d config/gnn/mnist.yaml -m config/models/gnn.yaml -t config/gnn_training_config.yaml `
+    --size-fractions 0.005,0.01,0.02,0.05,0.1,0.25,0.5,1.0 `
+    --num-seeds 10,10,10,10,5,5,5,1
 ```
 
 SLURM launchers: `slurm/train_gap_curve_<dataset>.sh` for all 7 datasets
@@ -690,6 +781,38 @@ than measured).
 step after a KNN-graph rebuild (e.g. after fixing Step 7's file choice)
 will mix stale and fresh rows in the same file under the same dataset
 name unless you move or delete the old CSV first.
+
+**Regularized vs. non-regularized comparison (for Block 6 of `gap_curve_vs_id.ipynb`):**
+`gap_curve_vs_id.ipynb`'s Block 6 compares each dataset's generalization-gap curve under
+the default model config against the same curve with regularization removed, to check
+whether it's regularization -- not graph size -- that's actually controlling the gap.
+That comparison needs a second set of gap-curve results, run with a second model config:
+
+```text
+config/models/gnn_noreg.yaml   # identical to config/models/gnn.yaml except dropout: 0
+```
+
+Only `dropout` is toggled here -- `weight_decay` is hardcoded to `0.0` in
+`Trainer.train_eval_gap_curve()`'s optimizer for every run regardless of model config, so it
+is identical (0.0) in both the regularized and non-regularized runs and is not part of this
+comparison.
+
+```powershell
+python src/scripts/train_gap_curve.py -d config/gnn/mnist.yaml     -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+python src/scripts/train_gap_curve.py -d config/gnn/fmnist.yaml    -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+python src/scripts/train_gap_curve.py -d config/gnn/pathmnist.yaml -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+python src/scripts/train_gap_curve.py -d config/gnn/cifar10.yaml   -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+python src/scripts/train_gap_curve.py -d config/gnn/fer2013.yaml   -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+python src/scripts/train_gap_curve.py -d config/gnn/celeba_gb.yaml -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+python src/scripts/train_gap_curve.py -d config/gnn/celeba_sb.yaml -m config/models/gnn_noreg.yaml -t config/gnn_training_config.yaml --results-dir results/gap_curve_noreg
+```
+
+SLURM launchers: `slurm/train_gap_curve_<dataset>_noreg.sh` for all 7 datasets, identical to
+each dataset's `slurm/train_gap_curve_<dataset>.sh` except for the model config and
+`--results-dir` above (same `--time`/`--mem` per dataset as the regularized launcher).
+Results land in `results/gap_curve_noreg/<dataset>.csv` -- same append-only caveat as
+`results/gap_curve/` above, and the same schema, so `gap_curve_vs_id.ipynb`'s existing loader
+reads it with no changes once the CSVs exist.
 
 ---
 
@@ -724,10 +847,11 @@ at `data/<Dataset>Embeddings/<name>_{train,test}_embeddings.npy` so
 This does not affect Step 7/9 — the KNN graph never reads these adapter
 files.
 
-`analysis/gap_curve_vs_id.ipynb` compares Step 11a's `fraction=1.0` rows
+`gap_curve_vs_id.ipynb`'s Block 5 compares Step 11a's `fraction=1.0` rows
 against Step 11b's MLP results as the GNN-vs-no-graph comparison (Step
 11's own `train_eval_grow_graph()` output isn't used for this since it
-writes no CSV — see the note in Step 11).
+writes no CSV — see the note in Step 11), saving a two-panel test-accuracy
+and generalization-gap bar chart to `analysis/block5_gnn_vs_mlp.png`.
 
 ---
 
