@@ -162,7 +162,7 @@ Generated outputs are stored under:
 src/scripts/checkpoints/       # VAE checkpoints (4 trained-here datasets only)
 data/*Embeddings/              # top-level VAE latent embeddings + smsl_embeddings/ subfolder
 data/*Graph/                   # KNN graph .pkl files
-results/id_estimation/         # Step 12 output, one CSV per dataset
+results/id_estimation/         # Step 12 output, one CSV per dataset per method (mle/, twonn/, corrint/ subfolders)
 results/gap_curve/             # Step 11a output, one CSV per dataset
 results/mlp_baseline/          # MLP-baseline output, one CSV per dataset
 results/train_gnn/             # SLURM .out logs, moved here manually
@@ -878,13 +878,23 @@ Two-NN
 Correlation Dimension
 ```
 
-Results land in `results/id_estimation/<label>.csv`, where `<label>` is
-parsed from the input filename. This step never reads `config/knn/*.yaml`
-or the `smsl_embeddings/` folder, so it was unaffected by the Step 7 bug
-for every dataset except CIFAR10, whose entire original embedding import
-into this fork turned out to be wrong (not a Step-7-style naming issue)
-and has since been replaced — its stale results were moved to
-`results/id_estimation/stale_wrong_cifar10_import/` rather than deleted.
+Results land in `results/id_estimation/<method>/<label>.csv` -- one CSV
+per method (`mle/`, `twonn/`, `corrint/`), not one file mixing all three,
+where `<label>` is parsed from the input filename. Use `--methods` to
+regenerate only a subset, e.g. `--methods corrint` touches only
+`results/id_estimation/corrint/<label>.csv`, leaving MLE's and Two-NN's
+own files (and history) alone -- useful since CorrInt's `--corrint-max-n`
+cap (default 25000, raised from the original 10000) is the one most
+likely to get bumped again and rerun on its own as more compute becomes
+available. This step never reads `config/knn/*.yaml` or the
+`smsl_embeddings/` folder, so it was unaffected by the Step 7 bug for
+every dataset except CIFAR10, whose entire original embedding import into
+this fork turned out to be wrong (not a Step-7-style naming issue) and has
+since been replaced -- its stale results were moved to
+`results/id_estimation/stale_wrong_cifar10_import/` rather than deleted
+(from back when this was still a single file per dataset; the per-method
+split happened later -- see `results/id_estimation_flat_pre_reorg/` for
+the last snapshot of that single-file layout).
 
 As noted above, `celeba_gb` and `celeba_sb` share identical latent
 features, so their ID estimates are expected to match exactly.
