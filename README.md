@@ -1,5 +1,125 @@
 # Image-GNN Intrinsic Dimension Estimation (Fork 2)
 
+## Paired loss comparison from supplied embeddings
+
+`src/scripts/compare_losses.py` runs only MNIST, FashionMNIST (`fmnist`),
+and PathMNIST, starting from the existing non-PCA SMSL `.npy` files.
+No VAE retraining, image downloads, W&B login, or notebook is required.
+
+The two arms use the repository's same `GNNModel` and cross-entropy:
+
+| Arm | Training objective |
+|---|---|
+| `ce` | cross-entropy |
+| `ldreg` | cross-entropy − `lambda_id * mean(log(local_ID))` |
+
+This is a supervised GNN adaptation of
+[LDReg (ICLR 2024)](https://github.com/HanxunH/LDReg), not a reproduction
+of its self-supervised image experiments. Local ID uses its method-of-moments
+estimator: for sorted nonself distances `r1,...,rk`, let `m` be the mean
+of `r1,...,r(k-1)` and estimate `d = m / (rk - m)`. Distances are computed
+on the learned features after the last GNN block, before classifier dropout.
+The reference branch is detached, while gradients flow through the query
+features. Self indices are explicitly excluded. Ratios are clamped to
+`[1e-6, 1-1e-6]` for finite logs; a completely collapsed batch receives low ID.
+Local ID is batch-dependent, not the separate global ID estimate in Step 12.
+`id-k=20` is independent of graph `knn=100`. Batches smaller than three
+contribute CE only and are excluded from ID averages.
+
+### Cluster setup and execution
+
+Use Python 3.10 or newer. Activate your cluster environment containing PyTorch
+and CUDA, install `requirements-loss-comparison.txt`, and install **pyg-lib or
+torch-sparse matching that exact PyTorch/CUDA version** for NeighborLoader.
+Use the [official PyG installation instructions](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
+to select matching wheels. Do not copy the older README's CUDA version blindly.
+Annoy installation may require the cluster's C++ compiler module.
+
+```bash
+python -m pip install -r requirements-loss-comparison.txt
+# From the repository root, with the environment already activated:
+bash jobs/compare_losses.sh --device cuda
+# Or, for Slurm (provide your account/partition in sbatch arguments):
+sbatch jobs/compare_losses.slurm
+```
+
+The launcher is scheduler independent; the Slurm wrapper is optional.
+It uses the current activated environment and does not hardcode a conda name,
+cluster account, or filesystem path. Slurm defaults request one GPU, 4 CPUs,
+32 GB RAM, and 24 hours; adjust to your site's resources and measured runtime.
+All three datasets run sequentially by default. To distribute across jobs,
+pass `--datasets mnist` (or `fmnist`/`pathmnist`) and **a distinct `--output`
+per job** to avoid concurrent aggregate plot writes.
+
+```bash
+bash jobs/compare_losses.sh --datasets mnist --seeds 0 1 2 --epochs 50 \
+  --lambda-id 0.01 --output results/loss_comparison_mnist --device cuda
+```
+
+Defaults read `config/models/gnn.yaml` (32 hidden features, 2 GCN blocks,
+dropout 0.5) and `config/gnn_training_config.yaml` (Adam, learning rate 0.01,
+batch size 256, 50 epochs); weight decay is zero, matching `train_gap_curve.py`.
+The existing classifier was moved into `models/classifier.py` and re-exported
+from `models/models.py`; default outputs and state-dict names are unchanged.
+This lets the new runner avoid importing unrelated VAE/JAX dependencies.
+
+Each dataset graph is built once, cached, and shared across both losses and all
+seeds. Construction follows the current builder: Euclidean Annoy, 50 trees,
+100 nonself neighbors, `exp(-distance/25)` weights, median cutoff, symmetric
+mean weights, and removal of zero-weight edges. Source files are SHA256 hashed
+in `manifest.json`. Labels and SMSL flags never enter distance calculations.
+Only active SMSL rows are loaded. Training uses the induced training graph;
+test evaluation uses the combined graph, as in the existing gap-curve protocol.
+This is transductive evaluation: test features influence the shared graph,
+but test labels never enter the training objective, model selection, or scheduler.
+
+The losses share initialization, graph, seed batches, dropout streams, epochs,
+optimizer, and evaluation settings. Training samples 10 neighbors per hop.
+Evaluation defaults to 30 per hop to bound cluster GPU memory; use
+`--eval-neighbors -1` for the old trainer's exhaustive evaluation (potentially
+much higher memory use). Evaluation seeds are reset so each arm sees the same
+sampled neighborhoods. GPU scatter operations can still be nondeterministic.
+Final-epoch results are reported; no best-test-epoch selection or test-based
+hyperparameter tuning is performed. The default lambda is an initial experiment
+setting, not a tuned optimum. Use a training-derived validation split for any
+future tuning rather than selecting lambda from test accuracy.
+
+### Outputs and restart behavior
+
+For each dataset, `results/loss_comparison/<dataset>/loss_comparison.png` and
+`.pdf` compare train/test CE, test accuracy, training objective, and train/test
+mean log ID over epochs. Curves show paired-seed means and sample standard
+deviations (zero shading for one seed). Different total objective scales do not
+establish better classification; use test CE and accuracy for that comparison.
+Each arm/seed has `history.csv`, `final.pt`, and `complete.json`.
+`results/loss_comparison/final_metrics.csv` contains final metrics for completed
+paired seeds only. Regenerate plots without training:
+
+```bash
+python src/scripts/plot_loss_comparison.py --results-dir results/loss_comparison
+```
+
+Existing experiment directories are protected. `--resume` verifies unchanged
+data/settings, skips completed arms, and restarts interrupted arms from their
+original initialization; it does not resume partway through an epoch. Use a new
+`--output` for changed lambda, seed list, budget, or other settings. Graph caches
+are generated locally and must not be replaced with untrusted pickle files.
+
+CPU smoke test using actual embeddings (plots explicitly marked SMOKE TEST):
+
+```bash
+python src/scripts/compare_losses.py --graph-backend exact --full-batch \
+  --limit 128 --knn 10 --id-k 5 --epochs 2 --seeds 0 --device cpu \
+  --output results/loss_comparison_smoke
+python -m unittest discover -s tests
+```
+
+This small test does not need Annoy or compiled PyG sampling extensions.
+It checks execution and plot generation, not research performance. Full runs
+require the cluster environment; no full-dataset result is implied by a smoke test.
+
+---
+
 This is a fork of `image-gnn-id-estimation` that extends the same VAE-based
 image-to-graph learning pipeline to a wider set of datasets, several of
 which arrive as **pre-computed embeddings supplied by the base paper's

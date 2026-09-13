@@ -1,0 +1,8 @@
+# Install PyTorch for the cluster CUDA version first, then this file.
+# NeighborLoader also needs pyg-lib or torch-sparse built for that PyTorch/CUDA.
+numpy
+torch-geometric
+annoy
+matplotlib
+PyYAML
+scikit-learn
