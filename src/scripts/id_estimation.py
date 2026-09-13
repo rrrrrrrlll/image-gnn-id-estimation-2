@@ -33,7 +33,9 @@ CORRINT_DEFAULT_K2 = 20
 # does not change curvature bias the way the parameters above do.
 TWONN_DEFAULT_DISCARD_FRACTION = 0.1
 
-_KNOWN_METHODS = ("mle", "twonn", "corrint")
+# Public so gen_graph_id.py can validate --methods before running anything,
+# instead of only failing partway through the first fraction's sweep.
+KNOWN_METHODS = ("mle", "twonn", "corrint")
 
 
 def _fit_one(method, sample, mle_n_neighbors, corrint_k1, corrint_k2, twonn_discard_fraction):
@@ -47,7 +49,16 @@ def _fit_one(method, sample, mle_n_neighbors, corrint_k1, corrint_k2, twonn_disc
     """
     if method == "mle":
         estimator = skdim.id.MLE()
-        estimated_id = float(estimator.fit_transform(sample, n_neighbors=mle_n_neighbors))
+        # fit_transform() must be passed comb="mle" explicitly -- MLE.fit()'s own
+        # default is comb="mle" (the correct Levina-Bickel harmonic-mean
+        # combination of pointwise estimates), but MLE does not override
+        # fit_transform(), so it inherits LocalEstimator.fit_transform()'s own
+        # default of comb="mean" (a plain arithmetic mean) and silently passes
+        # that into fit() instead, overriding MLE's better default. Confirmed by
+        # running the actual skdim source: the arithmetic mean consistently
+        # overestimates relative to the harmonic mean, by roughly 5% of the
+        # estimate and growing in absolute terms as the dimension itself grows.
+        estimated_id = float(estimator.fit_transform(sample, n_neighbors=mle_n_neighbors, comb="mle"))
         neighbor_param = f"n_neighbors={mle_n_neighbors}"
     elif method == "twonn":
         estimator = skdim.id.TwoNN(discard_fraction=twonn_discard_fraction)
@@ -61,6 +72,50 @@ def _fit_one(method, sample, mle_n_neighbors, corrint_k1, corrint_k2, twonn_disc
         raise ValueError(f"Unknown ID estimation method: {method}")
 
     return estimated_id, neighbor_param
+
+
+def deduplicate_embeddings(points):
+    """
+    Drop exact-duplicate rows before any ID estimation runs on them.
+
+    Duplicate embeddings (a repeated source image, or distinct images the
+    VAE happened to encode to the same latent point) are not informative
+    for a manifold-based ID estimate -- and, more importantly, MLE's
+    comb="mle" harmonic-mean aggregation is not robust to even one of
+    them: a point whose nearest neighbor sits at distance exactly 0 gets a
+    per-point local-dimension estimate of exactly 0 (log(Rk / 0) is +inf,
+    which dominates that point's sum), and a single 0 in a harmonic mean
+    (1 / mean(1 / estimates)) collapses the WHOLE aggregate to 0.0, no
+    matter how many thousands of well-behaved points are also in the
+    sample. FER2013 (~7.9% exact-duplicate rows) and CelebA (~0.1%) both
+    hit this in practice once comb was fixed from its previous silent
+    "mean" default to the correct "mle" default -- see
+    results/id_estimation for the before/after. Deduplicating once, up
+    front, removes the failure mode at its source rather than working
+    around it downstream, and (as a side benefit) means every size
+    fraction is a fraction of the genuinely distinct points available,
+    not padded out by copies.
+
+    points: (N, F) array -- ambient-space coordinates, any label column
+        already stripped.
+
+    Returns (deduplicated_points, n_dropped).
+    """
+    # View each row as a single structured-dtype element so np.unique can
+    # compare whole rows at once instead of column-by-column; this is the
+    # same trick used to survey duplicate rates during the audit, so the
+    # count this reports matches what was already found empirically.
+    contiguous = np.ascontiguousarray(points)
+    structured = contiguous.view(
+        [("", contiguous.dtype)] * contiguous.shape[1]
+    )
+    _, first_occurrence = np.unique(structured, return_index=True)
+    # np.unique sorts its output; re-sort the kept indices back into their
+    # original order so row order (and thus anything keyed off position)
+    # stays as close to the input as deduplication allows.
+    keep_idx = np.sort(first_occurrence)
+    n_dropped = points.shape[0] - len(keep_idx)
+    return points[keep_idx], n_dropped
 
 
 def run_id_scale_sweep(
@@ -135,7 +190,7 @@ def run_id_scale_sweep(
             sample = points[idx]
 
             for method in methods:
-                if method not in _KNOWN_METHODS:
+                if method not in KNOWN_METHODS:
                     raise ValueError(f"Unknown ID estimation method: {method}")
 
                 method_sample = sample
@@ -193,24 +248,57 @@ def run_id_scale_sweep(
     return records
 
 
-def write_id_results(records, results_path):
+def write_id_results(records, results_dir, label):
+    """
+    Writes records into one CSV per method, under
+    <results_dir>/<method>/<label>.csv -- e.g.
+    results/id_estimation/mle/mnist.csv,
+    results/id_estimation/twonn/mnist.csv,
+    results/id_estimation/corrint/mnist.csv, instead of one file mixing all
+    three methods together. This means a --methods corrint-only rerun (see
+    gen_graph_id.py) only ever touches results/id_estimation/corrint/<label>.csv
+    -- MLE's and Two-NN's own files, and their history, are untouched.
+
+    Each per-method file is still append-only, same as before: an existing
+    file gets new rows appended (no header rewritten), a missing one gets
+    created with a header. Re-running the same (dataset, method) is still the
+    caller's responsibility to archive/clear first, exactly as before.
+
+    records: list of record dicts, as returned by run_id_scale_sweep() --
+        every record must have a "method" key naming which file it goes to.
+    results_dir: the shared parent directory (e.g. "results/id_estimation");
+        method subfolders are created under it as needed.
+    label: dataset/label name, used as the CSV's filename stem.
+
+    Returns {method: path_written} for whichever methods were present in
+    records (empty dict if records was empty).
+    """
     if not records:
-        return None
+        return {}
 
-    results_path = Path(results_path)
-    results_path.parent.mkdir(parents=True, exist_ok=True)
+    results_dir = Path(results_dir)
 
-    fieldnames = list(records[0].keys())
-    write_header = not results_path.exists()
+    by_method = {}
+    for record in records:
+        by_method.setdefault(record["method"], []).append(record)
 
-    with open(results_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    written = {}
+    for method, method_records in by_method.items():
+        method_path = results_dir / method / f"{label}.csv"
+        method_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if write_header:
-            writer.writeheader()
+        fieldnames = list(method_records[0].keys())
+        write_header = not method_path.exists()
 
-        writer.writerows(records)
+        with open(method_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
 
-    print(f"Wrote {len(records)} row(s) to {results_path}")
+            if write_header:
+                writer.writeheader()
 
-    return results_path
+            writer.writerows(method_records)
+
+        print(f"Wrote {len(method_records)} row(s) to {method_path}")
+        written[method] = method_path
+
+    return written

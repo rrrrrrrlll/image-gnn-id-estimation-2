@@ -19,6 +19,24 @@ def parse_args(args):
         default="results/mlp_baseline",
         help="Directory the per-dataset MLP-baseline CSV is written to"
     )
+    parser.add_argument(
+        "--n-target",
+        type=int,
+        default=None,
+        help=(
+            "If given, each restart trains on a random n-target-row subsample of "
+            "the training set (capped at however many rows this dataset actually "
+            "has) instead of the full set -- for a fair comparison against a GNN "
+            "gap-curve point trained at the same matched size. Default (None) "
+            "trains on the full training set, matching the original behavior."
+        )
+    )
+    parser.add_argument(
+        "--num-seeds",
+        type=int,
+        default=1,
+        help="Number of independent (subsample draw + model init) restarts, appended as separate rows."
+    )
 
     return parser.parse_args(args)
 
@@ -40,7 +58,9 @@ def main(sys_args):
     trainer.dataset_name = Path(args.dataset_config).stem
 
     trainer.train_eval_mlp_baseline(
-        results_dir=args.results_dir
+        results_dir=args.results_dir,
+        n_target=args.n_target,
+        num_seeds=args.num_seeds
     )
 
 

@@ -8,8 +8,10 @@ __pycache__/
 
 # Ignore everything in the following folders
 analysis/
+bayesian_analysis/
 data/
 mock_data/
+slurm/
 logs/**
 **/*.pkl
 **/*.csv

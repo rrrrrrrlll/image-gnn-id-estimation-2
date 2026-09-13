@@ -36,6 +36,18 @@ def parse_args(args):
         default="results/gap_curve",
         help="Directory the per-dataset gap-curve CSV is written to"
     )
+    parser.add_argument(
+        "--reference-n",
+        type=int,
+        default=None,
+        help=(
+            "If given, --size-fractions are resolved as fractions of this fixed "
+            "value instead of this dataset's own eligible-training-node count -- "
+            "e.g. set to the smallest dataset's own size so every dataset in a "
+            "sweep trains on the same absolute sample sizes rather than the same "
+            "proportion of its own (differently-sized) pool."
+        )
+    )
 
     return parser.parse_args(args)
 
@@ -76,7 +88,8 @@ def main(sys_args):
     trainer.train_eval_gap_curve(
         size_fractions=size_fractions,
         num_seeds=num_seeds,
-        results_dir=args.results_dir
+        results_dir=args.results_dir,
+        reference_n=args.reference_n
     )
 
 

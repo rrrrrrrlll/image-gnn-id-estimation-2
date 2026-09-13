@@ -13,6 +13,8 @@ from datetime import datetime
 
 from pathlib import Path
 
+from torch.utils.data import Subset
+
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.loader import NeighborLoader
@@ -25,6 +27,7 @@ from models.models import (
     AEModel, 
     VQVAEModel, 
     GNNModel, 
+    GNNProjModel,
     GNN,
     DGMGNNModel, 
     MLPModel
@@ -602,7 +605,8 @@ class Trainer():
         self,
         size_fractions=(0.1, 0.25, 0.5, 0.75, 1.0),
         num_seeds=3,
-        results_dir="results/gap_curve"
+        results_dir="results/gap_curve",
+        reference_n=None
     ):
         """
         Generalization-gap-vs-graph-size curve (Gap 1).
@@ -620,7 +624,18 @@ class Trainer():
         size_fractions: fractions of the dataset's eligible training
             nodes to sample at each graph size (fractions rather than
             absolute counts so the same call is meaningful across
-            differently-sized datasets).
+            differently-sized datasets). See reference_n below for the
+            matched-training-size variant of this.
+        reference_n: if given, size_fractions become fractions of this
+            fixed value instead of this dataset's own eligible-node count --
+            e.g. set to the smallest dataset's own size so every dataset in
+            a sweep trains on the same absolute sample sizes rather than the
+            same *proportion* of its own (differently-sized) pool. None
+            (default) preserves the original per-dataset-relative behavior.
+            sample_subgraph() still clips n_target to this dataset's own
+            n_eligible, so a reference_n larger than a given dataset's pool
+            is silently capped there rather than erroring -- worth checking
+            eligible counts before picking reference_n for a new dataset set.
         num_seeds: number of independent (subgraph sample + model init)
             repeats per size, for averaging / error bars. The same seed
             value is reused for both the subgraph sample and the model
@@ -677,16 +692,22 @@ class Trainer():
 
         n_eligible = eligible_idx.shape[0]
 
+        # See reference_n's docstring above: when set, every fraction below
+        # is resolved against this fixed value instead of n_eligible.
+        size_base = reference_n if reference_n is not None else n_eligible
+
         print(f"GNN input features: {in_features}")
         print(f"Number of classes: {out_size}")
         print(f"Eligible training nodes: {n_eligible}")
+        if reference_n is not None:
+            print(f"Using fixed reference_n={reference_n} as the size_fractions base instead of n_eligible={n_eligible}")
 
         loss = getattr(sys.modules[__name__], self.training_config["loss"])
 
         records = []
 
         for fraction in size_fractions:
-            n_target = max(1, round(fraction * n_eligible))
+            n_target = max(1, round(fraction * size_base))
 
             # num_seeds may be a single int (same count everywhere) or a dict
             # keyed by fraction (per-fraction count) -- resolve it here so the
@@ -815,6 +836,7 @@ class Trainer():
                 records.append({
                     "dataset": self.dataset_name,
                     "fraction": fraction,
+                    "reference_n": size_base,
                     "n_target": n_target,
                     "n_actual": n_actual,
                     "seed": seed,
@@ -858,7 +880,9 @@ class Trainer():
 
     def train_eval_mlp_baseline(
         self,
-        results_dir="results/mlp_baseline"
+        results_dir="results/mlp_baseline",
+        n_target=None,
+        num_seeds=1
     ):
         """
         Non-graph baseline for Gap 2: trains an MLP directly on the same
@@ -873,13 +897,19 @@ class Trainer():
         runtime rather than read from the model config, since a
         dataset's actual VAE latent size depends on which sweep trial
         won and isn't safe to hardcode per dataset.
-        """
-        train_dl = DataLoader(
-            dataset=self.train_ds,
-            batch_size=self.training_config["batch_size"],
-            shuffle=True
-        )
 
+        n_target: if given, each restart trains on a random n_target-row
+            subsample of self.train_ds (drawn with that restart's own seed,
+            capped at however many rows this dataset actually has) instead
+            of every row -- for comparing against a GNN gap-curve point
+            trained at the same matched size. None (default) preserves the
+            original behavior: train on the full training set every time.
+        num_seeds: number of independent (subsample draw + model init)
+            restarts, appended as separate rows. Default 1 matches the
+            original single-run behavior -- note the original single run
+            had no explicit seed at all, so this makes even that default
+            case reproducible (seed 0) where it previously was not.
+        """
         test_dl = DataLoader(
             dataset=self.test_ds,
             batch_size=self.training_config["batch_size"],
@@ -898,100 +928,132 @@ class Trainer():
         print(f"MLP input features: {in_features}")
         print(f"Number of classes: {out_size}")
 
-        model : nn.Module = getattr(sys.modules[__name__], self.model_config["model"])
-        model = model(**model.pre_init(dict(self.model_config["args"]))).to(self.device)
-
         loss = getattr(sys.modules[__name__], self.training_config["loss"])
-        optimizer = torch.optim.Adam(params=model.parameters(), lr=lr, weight_decay=0.0)
 
-        train_acc, test_acc = [], []
-        train_loss_vals, test_loss_vals = [], []
+        n_available = len(self.train_ds)
 
-        for epoch in tqdm(range(epochs)):
-            train_acc = []
-            train_loss_vals = []
+        records = []
 
-            model.train()
-            for train_batch in train_dl:
-                batch = train_batch.to(self.device)
+        for seed in range(num_seeds):
+            if n_target is not None:
+                n_use = min(n_target, n_available)
+                generator = torch.Generator().manual_seed(seed)
+                perm = torch.randperm(n_available, generator=generator)[:n_use]
+                train_subset = Subset(self.train_ds, perm.tolist())
+            else:
+                n_use = n_available
+                train_subset = self.train_ds
 
-                # Forward pass
-                y_hat = model(batch)
+            train_dl = DataLoader(
+                dataset=train_subset,
+                batch_size=self.training_config["batch_size"],
+                shuffle=True
+            )
 
-                # Compute loss
-                J = loss(
-                    batch.y[batch.mask.bool()].reshape(-1).to(torch.long),
-                    y_hat
-                )
+            print()
+            print(f"=== {self.dataset_name} | n_target={n_target} | n_actual={n_use} | seed={seed} ===")
 
-                train_acc.append(
-                    100 * (
-                        sum(
-                            batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
-                        ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
-                    ).item()
-                )
+            # Reseed so each restart starts from an independent, but
+            # reproducible, weight initialization -- same convention as
+            # train_eval_gap_curve()'s per-(size, seed) reseeding.
+            torch.manual_seed(seed)
 
-                train_loss_vals.append(J.detach().cpu().numpy())
+            model : nn.Module = getattr(sys.modules[__name__], self.model_config["model"])
+            model = model(**model.pre_init(dict(self.model_config["args"]))).to(self.device)
 
-                # Backward pass
-                J.backward()
+            optimizer = torch.optim.Adam(params=model.parameters(), lr=lr, weight_decay=0.0)
 
-                # Optimization step
-                optimizer.step()
+            train_acc, test_acc = [], []
+            train_loss_vals, test_loss_vals = [], []
 
-                optimizer.zero_grad()
+            for epoch in tqdm(range(epochs)):
+                train_acc = []
+                train_loss_vals = []
 
-            test_acc = []
-            test_loss_vals = []
-
-            model.eval()
-            with torch.no_grad():
-                for test_batch in test_dl:
-                    batch = test_batch.to(self.device)
+                model.train()
+                for train_batch in train_dl:
+                    batch = train_batch.to(self.device)
 
                     # Forward pass
-                    y_val = model(batch)
+                    y_hat = model(batch)
 
-                    # Compute val loss
+                    # Compute loss
                     J = loss(
                         batch.y[batch.mask.bool()].reshape(-1).to(torch.long),
-                        y_val
+                        y_hat
                     )
 
-                    test_acc.append(
+                    train_acc.append(
                         100 * (
                             sum(
-                                batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_val, axis=1).indices.detach()
+                                batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_hat, axis=1).indices.detach()
                             ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
                         ).item()
                     )
 
-                    test_loss_vals.append(J.cpu().numpy())
+                    train_loss_vals.append(J.detach().cpu().numpy())
 
-            print(
-                f"Epoch {epoch + 1}/{epochs} | "
-                f"Train Acc: {np.mean(train_acc):.2f}% | "
-                f"Test Acc: {np.mean(test_acc):.2f}% | "
-                f"Train Loss: {np.mean(train_loss_vals):.4f} | "
-                f"Test Loss: {np.mean(test_loss_vals):.4f}"
-            )
+                    # Backward pass
+                    J.backward()
 
-        record = {
-            "dataset": self.dataset_name,
-            "epochs": epochs,
-            "train_acc": float(np.mean(train_acc)),
-            "test_acc": float(np.mean(test_acc)),
-            "gen_gap_acc": float(np.mean(train_acc) - np.mean(test_acc)),
-            "train_loss": float(np.mean(train_loss_vals)),
-            "test_loss": float(np.mean(test_loss_vals)),
-            "gen_gap_loss": float(np.mean(test_loss_vals) - np.mean(train_loss_vals)),
-            "timestamp": datetime.now().isoformat()
-        }
+                    # Optimization step
+                    optimizer.step()
 
-        self.write_mlp_baseline_results([record], results_dir)
+                    optimizer.zero_grad()
 
-        return record
+                test_acc = []
+                test_loss_vals = []
+
+                model.eval()
+                with torch.no_grad():
+                    for test_batch in test_dl:
+                        batch = test_batch.to(self.device)
+
+                        # Forward pass
+                        y_val = model(batch)
+
+                        # Compute val loss
+                        J = loss(
+                            batch.y[batch.mask.bool()].reshape(-1).to(torch.long),
+                            y_val
+                        )
+
+                        test_acc.append(
+                            100 * (
+                                sum(
+                                    batch.y[batch.mask.bool()].reshape(-1).detach() == torch.max(y_val, axis=1).indices.detach()
+                                ) / batch.y[batch.mask.bool()].reshape(-1).detach().shape[0]
+                            ).item()
+                        )
+
+                        test_loss_vals.append(J.cpu().numpy())
+
+                print(
+                    f"Epoch {epoch + 1}/{epochs} | "
+                    f"Train Acc: {np.mean(train_acc):.2f}% | "
+                    f"Test Acc: {np.mean(test_acc):.2f}% | "
+                    f"Train Loss: {np.mean(train_loss_vals):.4f} | "
+                    f"Test Loss: {np.mean(test_loss_vals):.4f}"
+                )
+
+            records.append({
+                "dataset": self.dataset_name,
+                "n_target": n_target,
+                "n_actual": n_use,
+                "seed": seed,
+                "epochs": epochs,
+                "train_acc": float(np.mean(train_acc)),
+                "test_acc": float(np.mean(test_acc)),
+                "gen_gap_acc": float(np.mean(train_acc) - np.mean(test_acc)),
+                "train_loss": float(np.mean(train_loss_vals)),
+                "test_loss": float(np.mean(test_loss_vals)),
+                "gen_gap_loss": float(np.mean(test_loss_vals) - np.mean(train_loss_vals)),
+                "timestamp": datetime.now().isoformat()
+            })
+
+        self.write_mlp_baseline_results(records, results_dir)
+
+        return records
 
     def write_mlp_baseline_results(self, records, results_dir):
         if not records:
