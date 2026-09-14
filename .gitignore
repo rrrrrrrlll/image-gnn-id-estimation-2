@@ -203,3 +203,14 @@ quick_cmds.txt
 # Windows
 Thumbs.db
 Desktop.ini
+
+# ID-regularization comparison harness -- local-only tooling, not shared via
+# the repo. Files stay on disk for standalone local use; git no longer tracks
+# them (see the "git rm --cached" step needed once alongside this entry).
+src/scripts/compare_losses.py
+src/scripts/compare_id_losses.py
+src/scripts/plot_loss_comparison.py
+src/scripts/plot_id_loss_comparison.py
+jobs/compare_losses.sh
+jobs/compare_losses.slurm
+jobs/compare_id_losses.sh
