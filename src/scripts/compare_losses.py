@@ -16,7 +16,7 @@ from torch_geometric.loader import NeighborLoader
 from torch_geometric.utils import to_undirected
 
 from models.classifier import GNNModel
-from training.id_loss import local_log_id
+from training.id_loss import local_log_id, mom_penalty
 
 ROOT = Path(__file__).resolve().parents[2]
 DATASETS = {"mnist": "MNIST", "fmnist": "FMNIST", "pathmnist": "PathMNIST"}
@@ -167,7 +167,8 @@ def run_dataset(name, args, model_args, training):
     arrays, sources = read_embeddings(args.data_root, name, args.limit)
     graph_settings = {k: getattr(args, k) for k in ("knn", "graph_seed", "trees", "graph_backend", "limit")}
     graph_key = {"sources": sources, "settings": graph_settings, "version": 1}
-    manifest = {"dataset": name, "graph": graph_key, "model": model_args, "training": training,
+    manifest = {"id_direction": "lower", "objective": "ce_plus_lambda_mean_log_id",
+                "dataset": name, "graph": graph_key, "model": model_args, "training": training,
                 "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
                               if k not in ("resume", "datasets", "output")},
                 "torch": torch.__version__, "protocol": "induced-train/transductive-test; final epoch"}
@@ -214,7 +215,7 @@ def run_dataset(name, args, model_args, training):
                     optimizer.zero_grad(set_to_none=True)
                     logits, z = model(batch, return_embeddings=True)
                     ce = F.cross_entropy(logits, batch.y[:batch.batch_size])
-                    penalty = -local_log_id(z, args.id_k).mean() if len(z) >= 3 else z.sum() * 0
+                    penalty = mom_penalty(z, args.id_k)
                     loss = ce + coefficient * penalty
                     if not torch.isfinite(loss):
                         raise FloatingPointError(f"Nonfinite loss: {name}/{method}/{seed}/{epoch}")
@@ -227,14 +228,15 @@ def run_dataset(name, args, model_args, training):
                 seed_all(seed * 100000 + 90001)
                 test = evaluate(model, graph, test_nodes, args, layers, device)
                 row = {"dataset": name, "method": method, "seed": seed, "epoch": epoch,
-                       "lambda_id": coefficient, "train_objective": total / count,
+                       "id_direction": "lower", "lambda_id": coefficient, "train_objective": total / count,
                        **{f"train_{k}": v for k, v in train.items()},
                        **{f"test_{k}": v for k, v in test.items()}}
                 history.append(row)
                 write_rows(run / "history.csv", history)
                 print(f"{name} {method} seed={seed} epoch={epoch}: test CE={test['ce']:.4f}, accuracy={test['accuracy']:.4f}", flush=True)
             torch.save({"state_dict": model.cpu().state_dict(), "model_args": dims,
-                        "seed": seed, "method": method, "epoch": epoch}, run / "final.pt")
+                        "seed": seed, "method": method, "epoch": epoch,
+                        "id_direction": "lower", "objective": manifest["objective"]}, run / "final.pt")
             (run / "complete.json").write_text(json.dumps(history[-1], indent=2))
     from plot_loss_comparison import plot_results
     plot_results(args.output)
@@ -244,7 +246,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--datasets", nargs="+", choices=DATASETS, default=list(DATASETS))
     p.add_argument("--data-root", type=Path, default=ROOT / "data")
-    p.add_argument("--output", type=Path, default=ROOT / "results/loss_comparison")
+    p.add_argument("--output", type=Path, default=ROOT / "results/loss_comparison_lower_id")
     p.add_argument("--model-config", type=Path, default=ROOT / "config/models/gnn.yaml")
     p.add_argument("--training-config", type=Path, default=ROOT / "config/gnn_training_config.yaml")
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])

@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/scripts"))
 import torch
 from torch_geometric.data import Data
-from training.id_loss import local_log_id
+from training.id_loss import local_log_id, mom_penalty
 from models.classifier import GNNModel
 from compare_losses import training_graph
 
@@ -22,17 +22,17 @@ class IDTests(unittest.TestCase):
         x = torch.randn(30, 5, requires_grad=True)
         value = local_log_id(x, 8)
         torch.testing.assert_close(value, local_log_id(x * 7, 8))
-        (-value.mean()).backward()
+        value.mean().backward()
         self.assertTrue(torch.isfinite(x.grad).all())
         self.assertGreater(x.grad.abs().sum().item(), 0)
 
     def test_duplicates_are_finite_and_collapse_is_low(self):
         x = torch.zeros(8, 4, requires_grad=True)
-        loss = -local_log_id(x).mean()
+        loss = mom_penalty(x)
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
         self.assertTrue(torch.isfinite(x.grad).all())
-        self.assertGreater(loss.item(), 10)
+        self.assertLess(loss.item(), -10)
 
     def test_train_graph_excludes_test_nodes(self):
         graph = Data(x=torch.randn(5, 3), y=torch.arange(5),
@@ -54,10 +54,19 @@ class IDTests(unittest.TestCase):
         logits, features = model(batch, return_embeddings=True)
         torch.testing.assert_close(plain, logits)
         self.assertEqual(tuple(features.shape), (8, 16))
-        (-local_log_id(features, 4).mean()).backward()
+        mom_penalty(features, 4).backward()
         grad = model.layers[0].layers[0].lin.weight.grad
         self.assertTrue(torch.isfinite(grad).all())
         self.assertGreater(grad.abs().sum().item(), 0)
+
+    def test_mom_positive_penalty_descends_towards_lower_id(self):
+        torch.manual_seed(7)
+        x = torch.randn(30, 5, requires_grad=True)
+        penalty = mom_penalty(x, 8)
+        torch.testing.assert_close(penalty, local_log_id(x, 8).mean())
+        penalty.backward()
+        after = local_log_id(x.detach() - 1e-3 * x.grad, 8).mean()
+        self.assertLess(after.item(), penalty.item())
 
 
 if __name__ == "__main__":

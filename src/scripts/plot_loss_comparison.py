@@ -25,6 +25,9 @@ def plot_results(root):
         seeds = sorted(completed["ce"].keys() & completed["ldreg"].keys())
         if not seeds:
             continue
+        manifest = json.loads((folder / "manifest.json").read_text())
+        direction = manifest.get("id_direction", "higher")
+        sign = "+" if direction == "lower" else "-"
         histories = {}
         for method in completed:
             histories[method] = []
@@ -46,7 +49,7 @@ def plot_results(root):
                 epochs = [int(row["epoch"]) for row in records[0]]
                 avg = values.mean(axis=0)
                 std = values.std(axis=0, ddof=1) if len(values) > 1 else np.zeros_like(avg)
-                label = "Cross-entropy" if method == "ce" else f"CE + LDReg (lambda={records[0][0]['lambda_id']})"
+                label = "Cross-entropy" if method == "ce" else f"CE {sign} lambda*mean(log ID) (lambda={records[0][0]['lambda_id']})"
                 ax.plot(epochs, avg, label=label, color=color)
                 ax.fill_between(epochs, avg - std, avg + std, color=color, alpha=.16)
             ax.set(title=title, xlabel="Epoch")
@@ -54,7 +57,7 @@ def plot_results(root):
         axes.flat[0].legend(fontsize=8)
         settings = json.loads((folder / "manifest.json").read_text())["arguments"]
         prefix = "SMOKE TEST — " if settings["limit"] else ""
-        fig.suptitle(f"{prefix}{dataset.upper()}: paired loss comparison ({len(seeds)} seeds; mean +/- sample SD)")
+        fig.suptitle(f"{prefix}{dataset.upper()}: encourage {direction} ID ({len(seeds)} seeds; mean +/- sample SD)")
         fig.tight_layout(rect=(0, .035, 1, .95))
         fig.text(.5, .012, "Total objectives have different offsets; compare classification quality using test CE and accuracy.", ha="center", fontsize=10)
         for extension in ("png", "pdf"):
@@ -70,5 +73,5 @@ def plot_results(root):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results-dir", type=Path, default=Path(__file__).resolve().parents[2] / "results/loss_comparison")
+    parser.add_argument("--results-dir", type=Path, default=Path(__file__).resolve().parents[2] / "results/loss_comparison_lower_id")
     plot_results(parser.parse_args().results_dir)

@@ -6,6 +6,11 @@ Neighbors are selected in each seed batch; the reference branch is detached.
 import torch
 
 
+def mom_penalty(features, k=20):
+    """Positive mean log ID: minimize CE + lambda * this to encourage lower ID."""
+    return local_log_id(features, k).mean() if len(features) >= 3 else features.sum() * 0
+
+
 def local_log_id(features, k=20, eps=1e-6):
     if features.ndim != 2 or features.shape[0] < 3:
         raise ValueError("Local ID needs at least three feature vectors")

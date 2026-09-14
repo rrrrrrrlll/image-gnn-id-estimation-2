@@ -1,6 +1,141 @@
 # Image-GNN Intrinsic Dimension Estimation (Fork 2)
 
-## Paired loss comparison from supplied embeddings
+## Train with MLE, TwoNN, and correlation losses (lower-ID objective)
+
+**Direction changed:** both ID-comparison training entry points now minimize
+`CE + lambda * log(ID)` (positive lambda) to encourage lower ID. The older
+method-of-moments entry point uses the positive mean of local log IDs.
+The estimator definitions, graph, architecture, seeds and other hyperparameters
+are unchanged. The new default folder is `results/id_loss_comparison_lower_id`.
+Old results under `results/id_loss_comparison` or `results/loss_comparison`
+were trained to encourage higher ID; preserve them as separate experiments.
+Manifests now record `id_direction=lower` and the objective; resuming an old
+higher-ID directory fails before any checkpoint is reused. Plot scripts read
+the manifest direction, so regenerating historical plots labels them higher-ID.
+An already running server process keeps its loaded code: stop it in its tmux
+training pane with Ctrl+C before extracting the update, then start a fresh
+lower-ID experiment. Earlier completed higher-ID models cannot be resumed as
+lower-ID models. No separate dimension evaluation is added.
+
+Use `src/scripts/compare_id_losses.py` or `bash jobs/compare_id_losses.sh`.
+The current objective encourages LOWER ID with a positive log-ID term:
+
+| Arm | Training objective |
+|---|---|
+| `ce` | CE |
+| `mle` | CE + lambda * log(batch MLE estimate) |
+| `twonn` | CE + lambda * log(batch TwoNN estimate) |
+| `corrint` | CE + lambda * log(batch **smooth correlation** estimate) |
+
+All three estimators drive GNN updates through autograd. They run only during
+training on the learned features after the last GNN block, before the classifier.
+**No offline ID estimation, test ID calculation, or dimension plots are performed.**
+Evaluation reports CE and accuracy. The plot also includes the ID loss term
+already computed during optimization, not an additional dimension measurement.
+The two-arm `compare_losses.py` now also uses the positive sign. Existing results
+are historical higher-ID experiments and are not modified.
+
+### Estimator definitions and adaptations
+
+The formulas follow the methods in `src/scripts/id_estimation.py`, implemented
+with PyTorch so the training penalty has gradients. All use Euclidean distances
+between distinct seed-node features in the current training batch. The reference
+feature branch is detached, as in the earlier LDReg adaptation; the query branch
+receives gradients. Exact duplicate rows are removed by selecting their first
+occurrence, retaining gradients on the selected feature rows.
+
+- **MLE:** `--mle-k 20`. For each point with sorted nonself distances
+  `r1,...,rk`, compute `d_i = (k-1) / sum_j(log(rk/rj))`. Use the harmonic
+  mean `D = 1 / mean_i(1/d_i)`, matching the repository's `comb="mle"` and
+  default `unbiased=False`. The penalty is `+log(D)`, not mean of local log IDs.
+  [MLE definition](https://scikit-dimension.readthedocs.io/en/latest/_modules/skdim/id/_MLE.html).
+- **TwoNN:** `--twonn-discard 0.1`. Sort the ratios `mu_i=r2/r1`, retain
+  `floor(N*(1-discard))` of the smallest, and fit the zero-intercept slope of
+  `y_i=-log(1-i/N)` against `x_i=log(mu_i)`, with ranks starting at zero.
+  Thus `D=sum(x*y)/sum(x*x)` and the penalty is `+log(D)`. This retains the
+  repository's empirical-CDF regression, rather than replacing it with MLE.
+  [TwoNN definition](https://scikit-dimension.readthedocs.io/en/latest/_modules/skdim/id/_TwoNN.html).
+- **Smooth correlation:** `--corr-k1 10 --corr-k2 20 --corr-temperature 0.1`.
+  Set `r1,r2` to the median kth-neighbor distances at those ranks. Approximate
+  the off-diagonal correlation counts with
+  `C_t(r) = mean(sigmoid((log(r)-log(distance))/temperature))`.
+  Compute `D=(log(C_t(r2))-log(C_t(r1)))/(log(r2)-log(r1))`, then `+log(D)`.
+  Gradients flow through both soft counts and median radii. **This is a smooth
+  training surrogate, not the original hard-threshold CorrInt estimator.**
+  [Original correlation definition](https://scikit-dimension.readthedocs.io/en/latest/_modules/skdim/id/_CorrInt.html).
+
+Counts shrink for small final batches, as in the offline estimators. Fewer than
+three distinct features (or fewer than two retained TwoNN ranks) receives a
+finite low-dimension penalty with zero gradient; CE still trains that batch.
+Distances are normalized by detached mean nonself distance for numeric stability.
+Epsilon floors and finite estimate caps prevent undefined logs/ratios but can
+saturate gradients in degenerate cases. These are batch training adaptations,
+not claims that the original NumPy functions can be backpropagated through.
+
+### Run on the JHU Lambda workstation
+
+The existing `.venv-gnn` environment with PyTorch 2.6.0+cu124, PyG 2.6.1,
+Annoy and the graph extensions already contains the needed dependencies.
+**No new package installation is needed for these training losses.**
+
+Upload/extract `id-loss-lower-update.tar.gz` before running. It includes both
+comparison entry points, both plot scripts, the ID loss modules, launchers,
+tests and this README. Keep the existing data and environment in place.
+The new runner imports graph/data/model helpers from the earlier runner.
+
+In a server tmux session, with the GPU assigned to you (GPU 1 below):
+
+```bash
+cd /home/wenhaom/image-gnn-experiment
+source .venv-gnn/bin/activate
+mkdir -p logs
+sed -i 's/\r$//' jobs/compare_id_losses.sh
+
+# First run a small test of all 4 arms on all 3 datasets:
+CUDA_VISIBLE_DEVICES=1 bash jobs/compare_id_losses.sh \
+  --device cuda --limit 512 --knn 10 --epochs 2 --seeds 0 \
+  --output results/id_loss_lower_smoke --resume \
+  2>&1 | tee -a logs/id_loss_lower_smoke.log
+
+# After the test finishes, train on all supplied embeddings:
+CUDA_VISIBLE_DEVICES=1 bash jobs/compare_id_losses.sh \
+  --device cuda --datasets mnist fmnist pathmnist \
+  --seeds 0 1 2 --epochs 50 --lambda-id 0.01 \
+  --output results/id_loss_comparison_lower_id --resume \
+  2>&1 | tee -a logs/id_loss_comparison_lower_id.log
+```
+
+This is **36 model runs** (3 datasets x 4 losses x 3 seeds), sequentially on
+one GPU. Do not launch alongside another run using the same assigned GPU.
+The shared graph construction, initialization, RNG resets, model configs,
+optimizer, sampling, and final-epoch evaluation follow the earlier comparison.
+The same lambda is an initial controlled setting, not a tuned optimum for each
+estimator. Neighborhood size and temperature are saved in the run manifest.
+
+Outputs are `results/id_loss_comparison_lower_id/<dataset>/loss_comparison.png` and
+`.pdf`, plus each arm/seed's `history.csv`, `complete.json`, and `final.pt`.
+Plots show train/test CE, train/test accuracy, training objective and unweighted
+ID penalty. A plot is refreshed after each complete four-arm seed group, using
+only seeds complete for all four arms. `final_metrics.csv` has the paired final
+results. There are no `train_log_id` or `test_log_id` fields.
+
+`--resume` skips completed runs and restarts incomplete models from initialization.
+Changed settings/data require a new output directory. An old two-arm result
+directory is incompatible: use the new default `results/id_loss_comparison_lower_id`.
+
+```bash
+# Regenerate the new four-arm plots without training:
+python src/scripts/plot_id_loss_comparison.py --results-dir results/id_loss_comparison_lower_id
+# CPU smoke check, useful without compiled graph-sampling extensions:
+python src/scripts/compare_id_losses.py --graph-backend exact --full-batch \
+  --limit 128 --knn 10 --epochs 2 --seeds 0 --device cpu \
+  --output results/id_loss_comparison_lower_id_smoke
+python -m unittest discover -s tests
+```
+
+---
+
+## Two-arm method-of-moments comparison (also lower-ID)
 
 `src/scripts/compare_losses.py` runs only MNIST, FashionMNIST (`fmnist`),
 and PathMNIST, starting from the existing non-PCA SMSL `.npy` files.
@@ -11,11 +146,11 @@ The two arms use the repository's same `GNNModel` and cross-entropy:
 | Arm | Training objective |
 |---|---|
 | `ce` | cross-entropy |
-| `ldreg` | cross-entropy − `lambda_id * mean(log(local_ID))` |
+| `ldreg` | cross-entropy + `lambda_id * mean(log(local_ID))` |
 
-This is a supervised GNN adaptation of
-[LDReg (ICLR 2024)](https://github.com/HanxunH/LDReg), not a reproduction
-of its self-supervised image experiments. Local ID uses its method-of-moments
+This lower-ID objective reverses the original higher-ID sign of
+[LDReg (ICLR 2024)](https://github.com/HanxunH/LDReg). It is not a reproduction
+of that paper's self-supervised image experiments. Local ID uses its method-of-moments
 estimator: for sorted nonself distances `r1,...,rk`, let `m` be the mean
 of `r1,...,r(k-1)` and estimate `d = m / (rk - m)`. Distances are computed
 on the learned features after the last GNN block, before classifier dropout.
@@ -53,7 +188,7 @@ per job** to avoid concurrent aggregate plot writes.
 
 ```bash
 bash jobs/compare_losses.sh --datasets mnist --seeds 0 1 2 --epochs 50 \
-  --lambda-id 0.01 --output results/loss_comparison_mnist --device cuda
+  --lambda-id 0.01 --output results/loss_comparison_lower_id_mnist --device cuda
 ```
 
 Defaults read `config/models/gnn.yaml` (32 hidden features, 2 GCN blocks,
@@ -86,17 +221,17 @@ future tuning rather than selecting lambda from test accuracy.
 
 ### Outputs and restart behavior
 
-For each dataset, `results/loss_comparison/<dataset>/loss_comparison.png` and
+For each dataset, `results/loss_comparison_lower_id/<dataset>/loss_comparison.png` and
 `.pdf` compare train/test CE, test accuracy, training objective, and train/test
 mean log ID over epochs. Curves show paired-seed means and sample standard
 deviations (zero shading for one seed). Different total objective scales do not
 establish better classification; use test CE and accuracy for that comparison.
 Each arm/seed has `history.csv`, `final.pt`, and `complete.json`.
-`results/loss_comparison/final_metrics.csv` contains final metrics for completed
+`results/loss_comparison_lower_id/final_metrics.csv` contains final metrics for completed
 paired seeds only. Regenerate plots without training:
 
 ```bash
-python src/scripts/plot_loss_comparison.py --results-dir results/loss_comparison
+python src/scripts/plot_loss_comparison.py --results-dir results/loss_comparison_lower_id
 ```
 
 Existing experiment directories are protected. `--resume` verifies unchanged
@@ -110,7 +245,7 @@ CPU smoke test using actual embeddings (plots explicitly marked SMOKE TEST):
 ```bash
 python src/scripts/compare_losses.py --graph-backend exact --full-batch \
   --limit 128 --knn 10 --id-k 5 --epochs 2 --seeds 0 --device cpu \
-  --output results/loss_comparison_smoke
+  --output results/loss_comparison_lower_id_smoke
 python -m unittest discover -s tests
 ```
 

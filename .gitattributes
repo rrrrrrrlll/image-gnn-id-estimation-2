@@ -1,3 +1,4 @@
 # Keep cluster entry points executable by Bash after Windows checkouts.
 jobs/compare_losses.sh text eol=lf
 jobs/compare_losses.slurm text eol=lf
+jobs/compare_id_losses.sh text eol=lf
