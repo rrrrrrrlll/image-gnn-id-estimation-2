@@ -34,4 +34,4 @@ python src/scripts/train_gap_curve.py \
     --size-fractions 0.01,0.025,0.05,0.1,0.25,0.5,0.75,1.0 \
     --num-seeds 10,10,10,10,5,5,5,5 \
     --reference-n 28709 \
-    --results-dir results/gap_curve_matched_n
+    --results-dir results/gap_curve/gap_curve_matched_n

@@ -92,7 +92,7 @@ def parse_args():
     parser.add_argument(
         "--results-dir",
         type=str,
-        default="results/id_estimation",
+        default="results/id_estimation_runs/id_estimation",
         help="Directory the per-dataset scale-sweep CSV is written to"
     )
 

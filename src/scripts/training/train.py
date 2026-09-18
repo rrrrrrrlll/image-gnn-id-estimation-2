@@ -21,6 +21,7 @@ from torch_geometric.loader import NeighborLoader
 
 from utils.metrics import torch_rmse, torch_vae_loss, torch_vqvae_loss, torch_ce_loss
 from data_preproc.datasets import build_datasets
+from training.id_regularizers import id_penalty
 from models.models import (
     VAEModel, 
     CNNVAEModel, 
@@ -704,6 +705,15 @@ class Trainer():
 
         loss = getattr(sys.modules[__name__], self.training_config["loss"])
 
+        # ID regularization is opt-in per training config. id_regularizer is
+        # absent (None) from every existing *.yaml training config, so this
+        # resolves to a strict no-op there -- see config/gnn_training_config_reg.yaml
+        # for the opt-in variant and training/id_regularizers.py for id_penalty().
+        id_regularizer = self.training_config.get("id_regularizer")
+        lambda_id = self.training_config.get("lambda_id", 0.0)
+        if id_regularizer:
+            print(f"ID regularization enabled: id_regularizer={id_regularizer}, lambda_id={lambda_id}")
+
         records = []
 
         for fraction in size_fractions:
@@ -748,8 +758,13 @@ class Trainer():
                     for train_batch in train_dl:
                         batch = train_batch.to(self.device)
 
-                        # Forward pass
-                        y_hat = model(batch)
+                        # Forward pass. When id_regularizer is set, also request the
+                        # pre-classifier-head embeddings (return_embeddings=True) so
+                        # id_penalty() below has something to measure. Off by default.
+                        if id_regularizer:
+                            y_hat, features = model(batch, return_embeddings=True)
+                        else:
+                            y_hat = model(batch)
 
                         # Compute loss. GNNModel.forward() now returns only the seed
                         # nodes' rows (out[:batch.batch_size]), so the target labels
@@ -762,6 +777,15 @@ class Trainer():
                             batch.y[:batch.batch_size].reshape(-1).to(torch.long),
                             y_hat
                         )
+
+                        # ID regularization: id_penalty() returns +log(D_batch), so
+                        # minimizing CE + lambda_id * id_penalty(...) pushes the
+                        # measured ID of `features` down (see
+                        # training/id_regularizers.py's module docstring). Skipped
+                        # entirely -- not just zero-weighted -- when id_regularizer
+                        # is unset, so existing configs' loss values are unchanged.
+                        if id_regularizer:
+                            J = J + lambda_id * id_penalty(features, id_regularizer)
 
                         train_loss_vals.append(J.detach().cpu().numpy())
 

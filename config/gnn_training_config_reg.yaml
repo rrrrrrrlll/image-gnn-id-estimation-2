@@ -1,0 +1,14 @@
+learning_rate: 0.01
+batch_size: 256
+num_epochs: 50
+save_model: False
+loss: torch_ce_loss
+
+# ID regularization (opt-in): training/train.py's train_eval_gap_curve() reads
+# these two fields via self.training_config.get(...). id_regularizer selects
+# which training/id_regularizers.id_penalty() estimator to use (mle/twonn/
+# corrint); lambda_id is its weight in CE + lambda_id * id_penalty(...).
+# Absent from gnn_training_config.yaml, so existing (non-"_reg") job scripts
+# are unaffected by this file's existence.
+id_regularizer: mle
+lambda_id: 0.01

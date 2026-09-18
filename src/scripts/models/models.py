@@ -189,6 +189,11 @@ class GNNProjModel(nn.Module):
     fixed projection width (e.g. 128) can be swept separately from the
     GCN's own hidden width.
 
+    forward()'s optional return_embeddings mirrors models/classifier.py's
+    GNNModel.forward(): embeddings are captured after the last
+    GNNBasicBlock, so the leading projection layer's own output is never
+    mistaken for the embedding (it isn't a GNNBasicBlock).
+
     Args:
     """
 
@@ -245,7 +250,7 @@ class GNNProjModel(nn.Module):
     def _eval(self):
         pass
 
-    def forward(self, batch):
+    def forward(self, batch, return_embeddings=False):
         out = batch.x
 
         if self.gnn_conv in (GATConv, GATv2Conv):
@@ -260,9 +265,11 @@ class GNNProjModel(nn.Module):
         else:
             conv_fwd_args = {}
 
+        embeddings = None
         for layer in self.layers:
             if isinstance(layer, GNNBasicBlock):
                 out, _ = layer(out, batch.edge_index, **conv_fwd_args)
+                embeddings = out
             elif isinstance(layer, self.gnn_conv):
                 out = layer(out, batch.edge_index, **conv_fwd_args)
             else:
@@ -278,7 +285,10 @@ class GNNProjModel(nn.Module):
         # entire local batch, not just the seeds -- scoring predictions for
         # under-supported sampled neighbors (whose own 2-hop neighborhoods were
         # never fully expanded) right alongside the real seed-node predictions.
-        return out[:batch.batch_size]
+        logits = out[:batch.batch_size]
+        if return_embeddings:
+            return logits, embeddings[:batch.batch_size]
+        return logits
 
 class DGMGNNModel(nn.Module):
     """

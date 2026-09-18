@@ -26,4 +26,4 @@ python src/scripts/train_mlp_baseline.py \
     -t config/gnn_training_config.yaml \
     --n-target 28709 \
     --num-seeds 5 \
-    --results-dir results/mlp_baseline_matched_n
+    --results-dir results/mlp_baseline/mlp_baseline_matched_n
